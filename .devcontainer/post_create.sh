@@ -8,6 +8,10 @@ UNITREE_ROS2_DIR="$SRC_DIR/unitree_ros2"
 UNITREE_MUJOCO_DIR="$SRC_DIR/unitree_mujoco"
 LOCAL_EXAMPLE_G1_DIR="$WORKSPACE_ROOT/example_g1"
 COPIED_EXAMPLE_G1_DIR="$SRC_DIR/example_g1"
+LOCAL_BASIC_ROS2_EXAMPLE_DIR="$WORKSPACE_ROOT/unitree_ros2_basic_example"
+ROS2_BASIC_WS_DIR="$WORKSPACE_ROOT/unitree_ros2_basic_example_ws"
+ROS2_BASIC_WS_SRC_DIR="$ROS2_BASIC_WS_DIR/src"
+COPIED_BASIC_ROS2_EXAMPLE_DIR="$ROS2_BASIC_WS_SRC_DIR/unitree_ros2_basic_example"
 CYCLONEDDS_WS_DIR="$UNITREE_ROS2_DIR/cyclonedds_ws"
 CYCLONEDDS_SRC_DIR="$CYCLONEDDS_WS_DIR/src"
 EXAMPLE_WS_DIR="$UNITREE_ROS2_DIR/example"
@@ -43,6 +47,16 @@ copy_local_example_g1_assets() {
 
   rm -rf "$COPIED_EXAMPLE_G1_DIR"
   cp -a "$LOCAL_EXAMPLE_G1_DIR" "$COPIED_EXAMPLE_G1_DIR"
+}
+
+copy_local_basic_ros2_example() {
+  if [ ! -d "$LOCAL_BASIC_ROS2_EXAMPLE_DIR" ]; then
+    return 0
+  fi
+
+  mkdir -p "$ROS2_BASIC_WS_SRC_DIR"
+  rm -rf "$COPIED_BASIC_ROS2_EXAMPLE_DIR"
+  cp -a "$LOCAL_BASIC_ROS2_EXAMPLE_DIR" "$COPIED_BASIC_ROS2_EXAMPLE_DIR"
 }
 
 resolve_mujoco_dir() {
@@ -221,6 +235,20 @@ setup_unitree_mujoco() {
   make -j"$(nproc)"
 }
 
+build_local_basic_ros2_workspace() {
+  if [ ! -d "$COPIED_BASIC_ROS2_EXAMPLE_DIR" ]; then
+    echo "Skipping local ROS 2 example workspace build: missing $COPIED_BASIC_ROS2_EXAMPLE_DIR" >&2
+    return 0
+  fi
+
+  mkdir -p "$ROS2_BASIC_WS_SRC_DIR"
+  cd "$ROS2_BASIC_WS_DIR"
+  source_setup_script /opt/ros/foxy/setup.bash
+  source_setup_script "$CYCLONEDDS_WS_DIR/install/setup.bash"
+  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+  colcon build --packages-select unitree_ros2_basic_example
+}
+
 cd "$WORKSPACE_ROOT"
 mkdir -p "$SRC_DIR"
 cd "$SRC_DIR"
@@ -236,6 +264,7 @@ fi
 patch_unitree_setup_scripts
 
 copy_local_example_g1_assets
+copy_local_basic_ros2_example
 
 build_unitree_sdk2
 
@@ -243,6 +272,7 @@ ensure_line_in_file 'export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH' ~/.
 ensure_line_in_file 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp' ~/.bashrc
 ensure_conditional_source_in_file '/workspace/src/unitree_ros2/cyclonedds_ws/install/setup.bash' ~/.bashrc
 ensure_conditional_source_in_file '/workspace/src/unitree_ros2/example/install/setup.bash' ~/.bashrc
+ensure_conditional_source_in_file '/workspace/unitree_ros2_basic_example_ws/install/setup.bash' ~/.bashrc
 
 source_setup_script /opt/ros/foxy/setup.bash
 rosdep install --from-paths "$UNITREE_ROS2_DIR/cyclonedds_ws/src/unitree" "$EXAMPLE_WS_DIR/src" \
@@ -252,5 +282,6 @@ build_unitree_ros2_for_foxy
 setup_unitree_mujoco
 export LD_LIBRARY_PATH=/opt/unitree_robotics/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 ensure_line_in_file 'export LD_LIBRARY_PATH=/opt/unitree_robotics/lib:$LD_LIBRARY_PATH' ~/.bashrc
+build_local_basic_ros2_workspace
 
 echo "=== Setup Complete ==="
