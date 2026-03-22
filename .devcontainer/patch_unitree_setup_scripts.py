@@ -37,6 +37,7 @@ source "$CYCLONEDDS_SETUP" """.format(message=MESSAGES[path.name])
     path.write_text(new_text)
 
 
+
 def main() -> None:
     repo_dir = Path("/workspace/src/unitree_ros2")
     if not repo_dir.exists():
