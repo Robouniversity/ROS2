@@ -5,9 +5,17 @@ WORKSPACE_ROOT="/workspace"
 SRC_DIR="$WORKSPACE_ROOT/src"
 UNITREE_SDK2_DIR="$SRC_DIR/unitree_sdk2"
 UNITREE_ROS2_DIR="$SRC_DIR/unitree_ros2"
+UNITREE_MUJOCO_DIR="$SRC_DIR/unitree_mujoco"
 CYCLONEDDS_WS_DIR="$UNITREE_ROS2_DIR/cyclonedds_ws"
 CYCLONEDDS_SRC_DIR="$CYCLONEDDS_WS_DIR/src"
 EXAMPLE_WS_DIR="$UNITREE_ROS2_DIR/example"
+MUJOCO_VERSION="mujoco-3.3.6"
+MUJOCO_TARBALL="mujoco-3.3.6-linux-x86_64.tar.gz"
+MUJOCO_DOWNLOAD_URL="https://github.com/google-deepmind/mujoco/releases/download/3.3.6/$MUJOCO_TARBALL"
+MUJOCO_LOCAL_DIR_DEFAULT="$WORKSPACE_ROOT/mujoco-3.3.6-linux-x86_64/$MUJOCO_VERSION"
+MUJOCO_HOME_DIR="$HOME/.mujoco"
+UNITREE_MUJOCO_SIM_DIR="$UNITREE_MUJOCO_DIR/simulate"
+UNITREE_MUJOCO_LINK="$UNITREE_MUJOCO_SIM_DIR/mujoco"
 
 ensure_repo() {
   local url="$1"
@@ -19,6 +27,45 @@ ensure_repo() {
   fi
 
   git clone --branch "$ref" --depth 1 "$url" "$dest"
+}
+
+ensure_apt_packages() {
+  apt-get update
+  apt-get install -y "$@"
+}
+
+resolve_mujoco_dir() {
+  local candidate
+
+  for candidate in \
+    "${MUJOCO_LOCAL_DIR:-}" \
+    "$MUJOCO_LOCAL_DIR_DEFAULT" \
+    "$HOME/.mujoco/$MUJOCO_VERSION"
+  do
+    if [ -n "$candidate" ] && [ -d "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+ensure_mujoco_available() {
+  local mujoco_home_target="$MUJOCO_HOME_DIR/$MUJOCO_VERSION"
+  local archive_path="$MUJOCO_HOME_DIR/$MUJOCO_TARBALL"
+
+  if [ -d "$mujoco_home_target" ]; then
+    return 0
+  fi
+
+  mkdir -p "$MUJOCO_HOME_DIR"
+
+  if [ ! -f "$archive_path" ]; then
+    curl -L "$MUJOCO_DOWNLOAD_URL" -o "$archive_path"
+  fi
+
+  tar -xzf "$archive_path" -C "$MUJOCO_HOME_DIR"
 }
 
 ensure_line_in_file() {
@@ -121,6 +168,47 @@ build_unitree_ros2_for_foxy() {
   colcon build --packages-select unitree_ros2_example
 }
 
+setup_unitree_mujoco() {
+  local mujoco_local_dir
+
+  ensure_repo "https://github.com/unitreerobotics/unitree_mujoco.git" "main" \
+    "$UNITREE_MUJOCO_DIR"
+
+  # unitree_mujoco links against the system fmt package on Ubuntu/Foxy.
+  ensure_apt_packages libboost-all-dev libfmt-dev libglfw3-dev
+
+  ensure_mujoco_available
+
+  if ! mujoco_local_dir="$(resolve_mujoco_dir)"; then
+    echo "MuJoCo $MUJOCO_VERSION must exist inside the container before linking." >&2
+    echo "Checked: $MUJOCO_LOCAL_DIR_DEFAULT and $HOME/.mujoco/$MUJOCO_VERSION" >&2
+    echo "If your MuJoCo files are only on the host, mount or copy them into the container first." >&2
+    return 1
+  fi
+
+  mkdir -p "$UNITREE_MUJOCO_SIM_DIR"
+
+  if [ -L "$UNITREE_MUJOCO_LINK" ]; then
+    local current_target
+    current_target="$(readlink -f "$UNITREE_MUJOCO_LINK")"
+    if [ "$current_target" != "$mujoco_local_dir" ]; then
+      rm -f "$UNITREE_MUJOCO_LINK"
+      ln -s "$mujoco_local_dir" "$UNITREE_MUJOCO_LINK"
+    fi
+  elif [ -e "$UNITREE_MUJOCO_LINK" ]; then
+    echo "Refusing to replace existing non-symlink path: $UNITREE_MUJOCO_LINK" >&2
+    return 1
+  else
+    ln -s "$mujoco_local_dir" "$UNITREE_MUJOCO_LINK"
+  fi
+
+  cd "$UNITREE_MUJOCO_SIM_DIR"
+  mkdir -p build
+  cd build
+  cmake ..
+  make -j"$(nproc)"
+}
+
 cd "$WORKSPACE_ROOT"
 mkdir -p "$SRC_DIR"
 cd "$SRC_DIR"
@@ -147,5 +235,6 @@ rosdep install --from-paths "$UNITREE_ROS2_DIR/cyclonedds_ws/src/unitree" "$EXAM
   --ignore-src -r -y
 
 build_unitree_ros2_for_foxy
+setup_unitree_mujoco
 
 echo "=== Setup Complete ==="
