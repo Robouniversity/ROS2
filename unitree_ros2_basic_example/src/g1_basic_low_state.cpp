@@ -20,32 +20,12 @@ constexpr int kG1MotorCount = 29;
 constexpr int kHgMotorSlotCount = 35;
 constexpr double kControlDt = 0.002;
 constexpr auto kControlPeriod = std::chrono::milliseconds(2);
-constexpr double kTransitionDuration = 3.0;
 
-enum G1JointIndex
-{
-  LEFT_HIP_PITCH = 0,
-  LEFT_HIP_ROLL = 1,
-  LEFT_HIP_YAW = 2,
-  LEFT_KNEE = 3,
-  LEFT_ANKLE_PITCH = 4,
-  LEFT_ANKLE_ROLL = 5,
-  RIGHT_HIP_PITCH = 6,
-  RIGHT_HIP_ROLL = 7,
-  RIGHT_HIP_YAW = 8,
-  RIGHT_KNEE = 9,
-  RIGHT_ANKLE_PITCH = 10,
-  RIGHT_ANKLE_ROLL = 11
-};
-
+// ---------------- CRC ----------------
 struct PackedMotorCmd
 {
   uint8_t mode;
-  float q;
-  float dq;
-  float tau;
-  float kp;
-  float kd;
+  float q, dq, tau, kp, kd;
   uint32_t reserve;
 };
 
@@ -58,39 +38,24 @@ struct PackedLowCmd
   uint32_t crc;
 };
 
-double Clamp(double value, double low, double high)
+double Clamp(double v, double lo, double hi)
 {
-  if (value < low) {
-    return low;
-  }
-  if (value > high) {
-    return high;
-  }
-  return value;
+  return std::max(lo, std::min(v, hi));
 }
 
 uint32_t Crc32Core(uint32_t *ptr, uint32_t len)
 {
   uint32_t crc = 0xFFFFFFFF;
-  constexpr uint32_t polynomial = 0x04c11db7;
+  constexpr uint32_t poly = 0x04c11db7;
 
   for (uint32_t i = 0; i < len; ++i) {
-    uint32_t xbit = 1u << 31;
     uint32_t data = ptr[i];
-    for (uint32_t bits = 0; bits < 32; ++bits) {
-      if (crc & 0x80000000) {
-        crc <<= 1;
-        crc ^= polynomial;
-      } else {
-        crc <<= 1;
-      }
-      if (data & xbit) {
-        crc ^= polynomial;
-      }
-      xbit >>= 1;
+    for (int b = 0; b < 32; b++) {
+      bool bit = (crc >> 31) ^ (data >> (31 - b));
+      crc <<= 1;
+      if (bit) crc ^= poly;
     }
   }
-
   return crc;
 }
 
@@ -100,179 +65,257 @@ void FillCrc(unitree_hg::msg::LowCmd &msg)
   raw.mode_pr = msg.mode_pr;
   raw.mode_machine = msg.mode_machine;
 
-  for (int i = 0; i < kHgMotorSlotCount; ++i) {
+  for (int i = 0; i < kHgMotorSlotCount; i++) {
     raw.motor_cmd[i].mode = msg.motor_cmd[i].mode;
     raw.motor_cmd[i].q = msg.motor_cmd[i].q;
     raw.motor_cmd[i].dq = msg.motor_cmd[i].dq;
     raw.motor_cmd[i].tau = msg.motor_cmd[i].tau;
     raw.motor_cmd[i].kp = msg.motor_cmd[i].kp;
     raw.motor_cmd[i].kd = msg.motor_cmd[i].kd;
-    raw.motor_cmd[i].reserve = msg.motor_cmd[i].reserve;
   }
 
-  std::memcpy(raw.reserve.data(), msg.reserve.data(), sizeof(uint32_t) * raw.reserve.size());
-  raw.crc = Crc32Core(reinterpret_cast<uint32_t *>(&raw), (sizeof(PackedLowCmd) >> 2) - 1);
+  std::memcpy(raw.reserve.data(), msg.reserve.data(), sizeof(uint32_t) * 4);
+  raw.crc = Crc32Core(reinterpret_cast<uint32_t *>(&raw),
+                      (sizeof(PackedLowCmd) >> 2) - 1);
   msg.crc = raw.crc;
 }
 
-}  // namespace
+} // namespace
 
-class G1BasicLowStateNode : public rclcpp::Node
+// ============================================================
+// 🚀 ROS2 NODE
+// ============================================================
+class G1AdvancedMotionNode : public rclcpp::Node
 {
 public:
-  G1BasicLowStateNode() : Node("g1_basic_low_state")
+  G1AdvancedMotionNode() : Node("g1_advanced_motion")
   {
-    const char *state_topic = kHighFrequency ? "lowstate" : "lf/lowstate";
+    const char *topic = kHighFrequency ? "lowstate" : "lf/lowstate";
 
-    state_subscription_ = this->create_subscription<unitree_hg::msg::LowState>(
-        state_topic, 10,
-        [this](const unitree_hg::msg::LowState::SharedPtr message) {
-          HandleLowState(message);
-        });
+    sub_ = create_subscription<unitree_hg::msg::LowState>(
+        topic, 10,
+        std::bind(&G1AdvancedMotionNode::StateCallback, this, std::placeholders::_1));
 
-    command_publisher_ =
-        this->create_publisher<unitree_hg::msg::LowCmd>("/lowcmd", 10);
+    pub_ = create_publisher<unitree_hg::msg::LowCmd>("/lowcmd", 10);
 
-    command_timer_ = this->create_wall_timer(
-        kControlPeriod,
-        [this]() { PublishStandCommand(); });
+    timer_ = create_wall_timer(kControlPeriod,
+                               std::bind(&G1AdvancedMotionNode::ControlLoop, this));
 
-    summary_timer_ = this->create_wall_timer(
-        std::chrono::seconds(1),
-        [this]() { PrintSummary(); });
-
-    InitializeCommand();
-    stand_up_joint_pos_.fill(0.0);
-    stand_down_joint_pos_.fill(0.0);
-
-    // Keep the pose conservative: only bend the knees for the "down" phase.
-    stand_down_joint_pos_[LEFT_KNEE] = -0.6;
-    stand_down_joint_pos_[RIGHT_KNEE] = -0.6;
+    InitCmd();
   }
 
 private:
-  void InitializeCommand()
+
+  // =========================
+  // 🧠 STATE MACHINE
+  // =========================
+  enum MotionState
   {
-    low_command_.mode_pr = 0;
-    low_command_.mode_machine = 0;
+    STAND,
+    WALK,
+    RIGHT_WAVE,
+    LEFT_WAVE,
+    BOTH_WAVE,
+    ARM_SWING,
+    DANCE,
+    SALUTE,
+    HANDSHAKE,
+    SQUAT
+  };
 
-    for (int i = 0; i < kHgMotorSlotCount; ++i) {
-      low_command_.motor_cmd[i].mode = 0x01;
-      low_command_.motor_cmd[i].q = 0.0f;
-      low_command_.motor_cmd[i].dq = 0.0f;
-      low_command_.motor_cmd[i].tau = 0.0f;
-      low_command_.motor_cmd[i].kp = 0.0f;
-      low_command_.motor_cmd[i].kd = 0.0f;
-      low_command_.motor_cmd[i].reserve = 0;
+  MotionState state_{STAND};
+  double state_start_{0.0};
+
+  // =========================
+  // 📡 ROS
+  // =========================
+  rclcpp::Subscription<unitree_hg::msg::LowState>::SharedPtr sub_;
+  rclcpp::Publisher<unitree_hg::msg::LowCmd>::SharedPtr pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+
+  // =========================
+  // 📊 DATA
+  // =========================
+  unitree_hg::msg::LowCmd cmd_{};
+  double q_target_[29]{};
+  double q_smooth_[29]{};
+  double t_{0.0};
+  bool received_{false};
+
+  // =========================
+  void InitCmd()
+  {
+    for (int i = 0; i < 29; i++) {
+      cmd_.motor_cmd[i].mode = 0x01;
+      cmd_.motor_cmd[i].kp = 50;
+      cmd_.motor_cmd[i].kd = 2;
     }
-
-    low_command_.reserve.fill(0);
-    low_command_.crc = 0;
   }
 
-  void HandleLowState(const unitree_hg::msg::LowState::SharedPtr &message)
+  void StateCallback(const unitree_hg::msg::LowState::SharedPtr msg)
   {
-    imu_ = message->imu_state;
-    mode_machine_ = static_cast<int>(message->mode_machine);
-
-    for (int i = 0; i < kG1MotorCount; ++i) {
-      motors_[i] = message->motor_state[i];
-    }
-
-    if (!received_state_) {
-      for (int i = 0; i < kG1MotorCount; ++i) {
-        initial_joint_pos_[i] = motors_[i].q;
-      }
-      received_state_ = true;
-      RCLCPP_INFO(this->get_logger(), "Received first G1 lowstate packet, starting stand sequence.");
-    }
+    (void)msg;
+    received_ = true;
   }
 
-  void PublishStandCommand()
+  // =========================
+  // 🔁 STATE TRANSITIONS
+  // =========================
+  void UpdateState()
   {
-    if (!received_state_) {
-      return;
-    }
+    double e = t_ - state_start_;
 
-    running_time_ += kControlDt;
-    low_command_.mode_pr = 0;
-    low_command_.mode_machine = static_cast<uint8_t>(mode_machine_);
-
-    const bool standing_up = running_time_ < kTransitionDuration;
-    const double phase_time = standing_up ? running_time_ : (running_time_ - kTransitionDuration);
-    const double phase = std::tanh(phase_time / 1.2);
-
-    for (int i = 0; i < kG1MotorCount; ++i) {
-      const double start = standing_up ? initial_joint_pos_[i] : stand_up_joint_pos_[i];
-      const double goal = standing_up ? stand_up_joint_pos_[i] : stand_down_joint_pos_[i];
-      const double command = phase * goal + (1.0 - phase) * start;
-
-      low_command_.motor_cmd[i].mode = 0x01;
-      low_command_.motor_cmd[i].q = static_cast<float>(Clamp(command, -1.5, 1.5));
-      low_command_.motor_cmd[i].dq = 0.0f;
-      low_command_.motor_cmd[i].tau = 0.0f;
-      low_command_.motor_cmd[i].kp = static_cast<float>(standing_up ? (phase * 60.0 + (1.0 - phase) * 20.0) : 60.0);
-      low_command_.motor_cmd[i].kd = 2.0f;
-    }
-
-    for (int i = kG1MotorCount; i < kHgMotorSlotCount; ++i) {
-      low_command_.motor_cmd[i].mode = 0x01;
-      low_command_.motor_cmd[i].q = 0.0f;
-      low_command_.motor_cmd[i].dq = 0.0f;
-      low_command_.motor_cmd[i].tau = 0.0f;
-      low_command_.motor_cmd[i].kp = 0.0f;
-      low_command_.motor_cmd[i].kd = 0.0f;
-    }
-
-    FillCrc(low_command_);
-    command_publisher_->publish(low_command_);
+    if (state_ == STAND && e > 2) Switch(WALK);
+    else if (state_ == WALK && e > 4) Switch(RIGHT_WAVE);
+    else if (state_ == RIGHT_WAVE && e > 4) Switch(LEFT_WAVE);
+    else if (state_ == LEFT_WAVE && e > 4) Switch(BOTH_WAVE);
+    else if (state_ == BOTH_WAVE && e > 4) Switch(ARM_SWING);
+    else if (state_ == ARM_SWING && e > 4) Switch(DANCE);
+    else if (state_ == DANCE && e > 5) Switch(SALUTE);
+    else if (state_ == SALUTE && e > 3) Switch(HANDSHAKE);
+    else if (state_ == HANDSHAKE && e > 4) Switch(SQUAT);
+    else if (state_ == SQUAT && e > 3) Switch(STAND);
   }
 
-  void PrintSummary()
+  void Switch(MotionState s)
   {
-    if (!received_state_) {
-      RCLCPP_INFO(this->get_logger(), "Waiting for Unitree lowstate messages...");
-      return;
-    }
-
-    const double phase_time =
-        running_time_ < kTransitionDuration ? running_time_ : (running_time_ - kTransitionDuration);
-    const char *phase_name = running_time_ < kTransitionDuration ? "stand_up" : "stand_down";
-
-    RCLCPP_INFO(
-        this->get_logger(),
-        "phase=%s t=%.2f mode=%d imu_rpy=[%.3f, %.3f, %.3f]",
-        phase_name, phase_time, mode_machine_,
-        imu_.rpy[0], imu_.rpy[1], imu_.rpy[2]);
-
-    RCLCPP_INFO(
-        this->get_logger(),
-        "knee_cmd=[%.3f, %.3f] knee_state=[%.3f, %.3f]",
-        low_command_.motor_cmd[LEFT_KNEE].q, low_command_.motor_cmd[RIGHT_KNEE].q,
-        motors_[LEFT_KNEE].q, motors_[RIGHT_KNEE].q);
+    state_ = s;
+    state_start_ = t_;
+    RCLCPP_INFO(get_logger(), "State -> %d", s);
   }
 
-  rclcpp::Subscription<unitree_hg::msg::LowState>::SharedPtr state_subscription_;
-  rclcpp::Publisher<unitree_hg::msg::LowCmd>::SharedPtr command_publisher_;
-  rclcpp::TimerBase::SharedPtr command_timer_;
-  rclcpp::TimerBase::SharedPtr summary_timer_;
+  // =========================
+  // 🤖 MOTIONS (from your demo)
+  // =========================
+  void Stand()
+  {
+    for (int i = 0; i < 29; i++) q_target_[i] = 0;
+  }
 
-  unitree_hg::msg::LowCmd low_command_{};
-  unitree_hg::msg::IMUState imu_{};
-  std::array<unitree_hg::msg::MotorState, kG1MotorCount> motors_;
-  std::array<double, kG1MotorCount> initial_joint_pos_{};
-  std::array<double, kG1MotorCount> stand_up_joint_pos_{};
-  std::array<double, kG1MotorCount> stand_down_joint_pos_{};
+  void Walk()
+  {
+    Stand();
+    double p = sin(2 * t_);
+    q_target_[3] = -0.4 * std::max(0.0, p);
+    q_target_[9] = -0.4 * std::max(0.0, -p);
+  }
 
-  double running_time_{0.0};
-  int mode_machine_{0};
-  bool received_state_{false};
+  void Squat()
+  {
+    Stand();
+    q_target_[3] = -0.6;
+    q_target_[9] = -0.6;
+  }
+
+  void Dance()
+  {
+    Stand();
+    q_target_[1] = 0.2 * sin(2 * t_);
+    q_target_[20] = 0.5 * sin(4 * t_);
+    q_target_[16] = -0.5 * sin(4 * t_);
+  }
+
+  void RightWave()
+  {
+    Stand();
+    q_target_[20] = 0.4;
+    q_target_[21] = -0.6;
+    q_target_[22] = 0.5 * sin(4 * t_);
+  }
+
+  void LeftWave()
+  {
+    Stand();
+    q_target_[16] = 0.4;
+    q_target_[17] = -0.6;
+    q_target_[18] = 0.5 * sin(4 * t_);
+  }
+
+  void BothWave()
+  {
+    Stand();
+    q_target_[20] = 0.4;
+    q_target_[21] = -0.6;
+    q_target_[22] = 0.5 * sin(4 * t_);
+
+    q_target_[16] = 0.4;
+    q_target_[17] = -0.6;
+    q_target_[18] = -0.5 * sin(4 * t_);
+  }
+
+  void ArmSwing()
+  {
+    Stand();
+    double s = sin(3 * t_);
+    q_target_[20] = 0.5 * s;
+    q_target_[16] = -0.5 * s;
+    q_target_[21] = -0.4;
+    q_target_[17] = -0.4;
+  }
+
+  void Salute()
+  {
+    Stand();
+    q_target_[20] = 0.6;
+    q_target_[21] = -1.0;
+    q_target_[22] = 0.2;
+  }
+
+  void Handshake()
+  {
+    Stand();
+    q_target_[20] = 0.5;
+    q_target_[21] = -0.8;
+    q_target_[22] = 0.3 * sin(5 * t_);
+  }
+
+  // =========================
+  // 🔁 CONTROL LOOP
+  // =========================
+  void ControlLoop()
+  {
+    if (!received_) return;
+
+    t_ += kControlDt;
+
+    UpdateState();
+
+    switch (state_)
+    {
+      case STAND: Stand(); break;
+      case WALK: Walk(); break;
+      case RIGHT_WAVE: RightWave(); break;
+      case LEFT_WAVE: LeftWave(); break;
+      case BOTH_WAVE: BothWave(); break;
+      case ARM_SWING: ArmSwing(); break;
+      case DANCE: Dance(); break;
+      case SALUTE: Salute(); break;
+      case HANDSHAKE: Handshake(); break;
+      case SQUAT: Squat(); break;
+    }
+
+    // smoothing
+    for (int i = 0; i < 29; i++) {
+      q_smooth_[i] += 0.05 * (q_target_[i] - q_smooth_[i]);
+
+      cmd_.motor_cmd[i].q =
+          static_cast<float>(Clamp(q_smooth_[i], -1.5, 1.5));
+      cmd_.motor_cmd[i].dq = 0;
+      cmd_.motor_cmd[i].tau = 0;
+    }
+
+    FillCrc(cmd_);
+    pub_->publish(cmd_);
+  }
 };
 
+// =========================
+// MAIN
+// =========================
 int main(int argc, char *argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<G1BasicLowStateNode>());
+  rclcpp::spin(std::make_shared<G1AdvancedMotionNode>());
   rclcpp::shutdown();
   return 0;
 }
