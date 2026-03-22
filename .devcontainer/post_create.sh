@@ -6,6 +6,8 @@ SRC_DIR="$WORKSPACE_ROOT/src"
 UNITREE_SDK2_DIR="$SRC_DIR/unitree_sdk2"
 UNITREE_ROS2_DIR="$SRC_DIR/unitree_ros2"
 UNITREE_MUJOCO_DIR="$SRC_DIR/unitree_mujoco"
+LOCAL_EXAMPLE_G1_DIR="$WORKSPACE_ROOT/example_g1"
+COPIED_EXAMPLE_G1_DIR="$SRC_DIR/example_g1"
 CYCLONEDDS_WS_DIR="$UNITREE_ROS2_DIR/cyclonedds_ws"
 CYCLONEDDS_SRC_DIR="$CYCLONEDDS_WS_DIR/src"
 EXAMPLE_WS_DIR="$UNITREE_ROS2_DIR/example"
@@ -32,6 +34,15 @@ ensure_repo() {
 ensure_apt_packages() {
   apt-get update
   apt-get install -y "$@"
+}
+
+copy_local_example_g1_assets() {
+  if [ ! -d "$LOCAL_EXAMPLE_G1_DIR" ]; then
+    return 0
+  fi
+
+  rm -rf "$COPIED_EXAMPLE_G1_DIR"
+  cp -a "$LOCAL_EXAMPLE_G1_DIR" "$COPIED_EXAMPLE_G1_DIR"
 }
 
 resolve_mujoco_dir() {
@@ -127,7 +138,7 @@ build_unitree_sdk2() {
   cd "$UNITREE_SDK2_DIR"
   mkdir -p build
   cd build
-  cmake ..
+  cmake .. -DCMAKE_INSTALL_PREFIX=/opt/unitree_robotics
   make -j"$(nproc)"
   make install || true
 }
@@ -187,6 +198,7 @@ setup_unitree_mujoco() {
   fi
 
   mkdir -p "$UNITREE_MUJOCO_SIM_DIR"
+  cp -f "$LOCAL_EXAMPLE_G1_DIR/config.yaml" "$UNITREE_MUJOCO_SIM_DIR/config.yaml"
 
   if [ -L "$UNITREE_MUJOCO_LINK" ]; then
     local current_target
@@ -223,6 +235,8 @@ fi
 
 patch_unitree_setup_scripts
 
+copy_local_example_g1_assets
+
 build_unitree_sdk2
 
 ensure_line_in_file 'export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH' ~/.bashrc
@@ -236,5 +250,7 @@ rosdep install --from-paths "$UNITREE_ROS2_DIR/cyclonedds_ws/src/unitree" "$EXAM
 
 build_unitree_ros2_for_foxy
 setup_unitree_mujoco
+export LD_LIBRARY_PATH=/opt/unitree_robotics/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+ensure_line_in_file 'export LD_LIBRARY_PATH=/opt/unitree_robotics/lib:$LD_LIBRARY_PATH' ~/.bashrc
 
 echo "=== Setup Complete ==="
