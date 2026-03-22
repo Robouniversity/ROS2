@@ -8,5 +8,8 @@ find_package(unitree_sdk2 REQUIRED)
 add_executable(stand_g1 stand_g1.cpp)
 target_link_libraries(stand_g1  unitree_sdk2)
 
+add_executable(move_ankle_g1 move_ankle_g1.cpp)
+target_link_libraries(move_ankle_g1 unitree_sdk2)
+
 
 SET(CMAKE_BUILD_TYPE Release)
