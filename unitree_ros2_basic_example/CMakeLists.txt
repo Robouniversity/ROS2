@@ -17,8 +17,12 @@ find_package(unitree_hg REQUIRED)
 add_executable(g1_basic_low_state src/g1_basic_low_state.cpp)
 ament_target_dependencies(g1_basic_low_state rclcpp std_msgs unitree_hg)
 
+add_executable(g1_move_ankle src/g1_move_ankle.cpp)
+ament_target_dependencies(g1_move_ankle rclcpp std_msgs unitree_hg)
+
 install(TARGETS
   g1_basic_low_state
+  g1_move_ankle
   DESTINATION lib/${PROJECT_NAME}
 )
 
