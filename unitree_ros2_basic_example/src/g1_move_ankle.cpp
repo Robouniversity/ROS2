@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -17,7 +18,33 @@ constexpr int kHgMotorSlotCount = 35;
 constexpr double kControlDt = 0.002;
 constexpr auto kControlPeriod = std::chrono::milliseconds(2);
 constexpr int kLeftAnklePitch = 4;
+constexpr int kLeftAnkleRoll = 5;
 constexpr int kRightAnklePitch = 10;
+constexpr int kRightAnkleRoll = 11;
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kMoveToZeroDuration = 3.0;
+
+enum class Mode : uint8_t
+{
+  kPr = 0,
+  kAb = 1
+};
+
+constexpr std::array<float, kG1MotorCount> kJointKp{
+  60.0F, 60.0F, 60.0F, 100.0F, 40.0F, 40.0F,
+  60.0F, 60.0F, 60.0F, 100.0F, 40.0F, 40.0F,
+  60.0F, 40.0F, 40.0F,
+  40.0F, 40.0F, 40.0F, 40.0F, 40.0F, 40.0F, 40.0F,
+  40.0F, 40.0F, 40.0F, 40.0F, 40.0F, 40.0F, 40.0F
+};
+
+constexpr std::array<float, kG1MotorCount> kJointKd{
+  1.0F, 1.0F, 1.0F, 2.0F, 1.0F, 1.0F,
+  1.0F, 1.0F, 1.0F, 2.0F, 1.0F, 1.0F,
+  1.0F, 1.0F, 1.0F,
+  1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
+  1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F
+};
 
 struct PackedMotorCmd
 {
@@ -90,14 +117,14 @@ public:
       "lowstate", 10,
       std::bind(&G1MoveAnkleNode::StateCallback, this, std::placeholders::_1));
 
-    pub_ = create_publisher<unitree_hg::msg::LowCmd>("/lowcmd", 10);
+    pub_ = create_publisher<unitree_hg::msg::LowCmd>("lowcmd", 10);
     timer_ = create_wall_timer(kControlPeriod, std::bind(&G1MoveAnkleNode::ControlLoop, this));
 
     InitCmd();
 
     RCLCPP_INFO(
       get_logger(),
-      "g1_move_ankle is ready. Waiting for low state, then holding pose for 1 s before ankle motion.");
+      "g1_move_ankle is ready. Waiting for low state, moving to zero pose, then starting ankle motion.");
   }
 
 private:
@@ -107,26 +134,31 @@ private:
 
   unitree_hg::msg::LowCmd cmd_{};
   std::array<double, kG1MotorCount> q_{};
+  std::array<double, kG1MotorCount> q_init_{};
   std::array<double, kG1MotorCount> q_cmd_{};
   std::array<double, kG1MotorCount> q_target_{};
 
   double t_{0.0};
   bool received_state_{false};
   bool initialized_pose_{false};
+  uint8_t mode_machine_{0};
   const double tau_{0.08};
 
   void InitCmd()
   {
     for (int i = 0; i < kG1MotorCount; ++i) {
       cmd_.motor_cmd[i].mode = 0x01;
-      cmd_.motor_cmd[i].kp = 40.0F;
-      cmd_.motor_cmd[i].kd = 2.0F;
+      cmd_.motor_cmd[i].kp = kJointKp[i];
+      cmd_.motor_cmd[i].kd = kJointKd[i];
     }
+    cmd_.mode_pr = static_cast<uint8_t>(Mode::kPr);
+    cmd_.mode_machine = 0;
   }
 
   void StateCallback(const unitree_hg::msg::LowState::SharedPtr msg)
   {
     received_state_ = true;
+    mode_machine_ = msg->mode_machine;
 
     for (int i = 0; i < kG1MotorCount; ++i) {
       q_[i] = msg->motor_state[i].q;
@@ -142,11 +174,14 @@ private:
   {
     SetNeutralPose();
 
-    const double amplitude = 8.0 * M_PI / 180.0;
-    const double ankle_pitch = amplitude * std::sin(2.0 * M_PI * 0.5 * t_);
+    const double phase_time = t_ - kMoveToZeroDuration;
+    const double ankle_pitch = (30.0 * kPi / 180.0) * std::sin(2.0 * kPi * phase_time);
+    const double ankle_roll = (10.0 * kPi / 180.0) * std::sin(2.0 * kPi * phase_time);
 
     q_target_[kLeftAnklePitch] = ankle_pitch;
+    q_target_[kLeftAnkleRoll] = ankle_roll;
     q_target_[kRightAnklePitch] = ankle_pitch;
+    q_target_[kRightAnkleRoll] = -ankle_roll;
   }
 
   void SmoothCommands()
@@ -160,6 +195,9 @@ private:
 
   void PublishCommand()
   {
+    cmd_.mode_pr = static_cast<uint8_t>(Mode::kPr);
+    cmd_.mode_machine = mode_machine_;
+
     for (int i = 0; i < kG1MotorCount; ++i) {
       cmd_.motor_cmd[i].q = static_cast<float>(q_cmd_[i]);
       cmd_.motor_cmd[i].dq = 0.0F;
@@ -178,6 +216,7 @@ private:
 
     if (!initialized_pose_) {
       for (int i = 0; i < kG1MotorCount; ++i) {
+        q_init_[i] = q_[i];
         q_target_[i] = q_[i];
         q_cmd_[i] = q_[i];
       }
@@ -186,11 +225,12 @@ private:
 
     t_ += kControlDt;
 
-    if (t_ < 1.0) {
+    if (t_ < kMoveToZeroDuration) {
+      const double ratio = std::clamp(t_ / kMoveToZeroDuration, 0.0, 1.0);
       for (int i = 0; i < kG1MotorCount; ++i) {
-        q_target_[i] = q_[i];
-        q_cmd_[i] = q_[i];
+        q_target_[i] = (1.0 - ratio) * q_init_[i];
       }
+      SmoothCommands();
     } else {
       SetAnkleMotion();
       SmoothCommands();

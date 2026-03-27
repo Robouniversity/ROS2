@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -20,6 +21,29 @@ constexpr int kG1MotorCount = 29;
 constexpr int kHgMotorSlotCount = 35;
 constexpr double kControlDt = 0.002;
 constexpr auto kControlPeriod = std::chrono::milliseconds(2);
+constexpr double kMoveToZeroDuration = 3.0;
+
+enum class Mode : uint8_t
+{
+  kPr = 0,
+  kAb = 1
+};
+
+constexpr std::array<float, kG1MotorCount> kJointKp{
+  60.0F, 60.0F, 60.0F, 100.0F, 40.0F, 40.0F,
+  60.0F, 60.0F, 60.0F, 100.0F, 40.0F, 40.0F,
+  60.0F, 40.0F, 40.0F,
+  40.0F, 40.0F, 40.0F, 40.0F, 40.0F, 40.0F, 40.0F,
+  40.0F, 40.0F, 40.0F, 40.0F, 40.0F, 40.0F, 40.0F
+};
+
+constexpr std::array<float, kG1MotorCount> kJointKd{
+  1.0F, 1.0F, 1.0F, 2.0F, 1.0F, 1.0F,
+  1.0F, 1.0F, 1.0F, 2.0F, 1.0F, 1.0F,
+  1.0F, 1.0F, 1.0F,
+  1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
+  1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F
+};
 
 // ---------------- CRC ----------------
 struct PackedMotorCmd
@@ -96,12 +120,16 @@ public:
         topic, 10,
         std::bind(&G1AdvancedMotionNode::StateCallback, this, std::placeholders::_1));
 
-    pub_ = create_publisher<unitree_hg::msg::LowCmd>("/lowcmd", 10);
+    pub_ = create_publisher<unitree_hg::msg::LowCmd>("lowcmd", 10);
 
     timer_ = create_wall_timer(kControlPeriod,
                                std::bind(&G1AdvancedMotionNode::ControlLoop, this));
 
     InitCmd();
+
+    RCLCPP_INFO(
+      get_logger(),
+      "g1_advanced_motion is ready. Waiting for low state, moving to zero pose, then starting the motion state machine.");
   }
 
 private:
@@ -137,25 +165,38 @@ private:
   // 📊 DATA
   // =========================
   unitree_hg::msg::LowCmd cmd_{};
+  std::array<double, kG1MotorCount> q_{};
+  std::array<double, kG1MotorCount> dq_{};
+  std::array<double, kG1MotorCount> q_init_{};
   double q_target_[29]{};
   double q_smooth_[29]{};
   double t_{0.0};
   bool received_{false};
+  bool initialized_pose_{false};
+  uint8_t mode_machine_{0};
+  const double tau_{0.08};
 
   // =========================
   void InitCmd()
   {
     for (int i = 0; i < 29; i++) {
       cmd_.motor_cmd[i].mode = 0x01;
-      cmd_.motor_cmd[i].kp = 50;
-      cmd_.motor_cmd[i].kd = 2;
+      cmd_.motor_cmd[i].kp = kJointKp[i];
+      cmd_.motor_cmd[i].kd = kJointKd[i];
     }
+    cmd_.mode_pr = static_cast<uint8_t>(Mode::kPr);
+    cmd_.mode_machine = 0;
   }
 
   void StateCallback(const unitree_hg::msg::LowState::SharedPtr msg)
   {
-    (void)msg;
     received_ = true;
+    mode_machine_ = msg->mode_machine;
+
+    for (int i = 0; i < kG1MotorCount; ++i) {
+      q_[i] = msg->motor_state[i].q;
+      dq_[i] = msg->motor_state[i].dq;
+    }
   }
 
   // =========================
@@ -276,27 +317,46 @@ private:
   {
     if (!received_) return;
 
-    t_ += kControlDt;
-
-    UpdateState();
-
-    switch (state_)
-    {
-      case STAND: Stand(); break;
-      case WALK: Walk(); break;
-      case RIGHT_WAVE: RightWave(); break;
-      case LEFT_WAVE: LeftWave(); break;
-      case BOTH_WAVE: BothWave(); break;
-      case ARM_SWING: ArmSwing(); break;
-      case DANCE: Dance(); break;
-      case SALUTE: Salute(); break;
-      case HANDSHAKE: Handshake(); break;
-      case SQUAT: Squat(); break;
+    if (!initialized_pose_) {
+      for (int i = 0; i < kG1MotorCount; ++i) {
+        q_init_[i] = q_[i];
+        q_target_[i] = q_[i];
+        q_smooth_[i] = q_[i];
+      }
+      initialized_pose_ = true;
     }
 
-    // smoothing
+    t_ += kControlDt;
+
+    if (t_ < kMoveToZeroDuration) {
+      const double ratio = std::clamp(t_ / kMoveToZeroDuration, 0.0, 1.0);
+      for (int i = 0; i < kG1MotorCount; ++i) {
+        q_target_[i] = (1.0 - ratio) * q_init_[i];
+      }
+    } else {
+      UpdateState();
+
+      switch (state_)
+      {
+        case STAND: Stand(); break;
+        case WALK: Walk(); break;
+        case RIGHT_WAVE: RightWave(); break;
+        case LEFT_WAVE: LeftWave(); break;
+        case BOTH_WAVE: BothWave(); break;
+        case ARM_SWING: ArmSwing(); break;
+        case DANCE: Dance(); break;
+        case SALUTE: Salute(); break;
+        case HANDSHAKE: Handshake(); break;
+        case SQUAT: Squat(); break;
+      }
+    }
+
+    cmd_.mode_pr = static_cast<uint8_t>(Mode::kPr);
+    cmd_.mode_machine = mode_machine_;
+
+    const double alpha = kControlDt / tau_;
     for (int i = 0; i < 29; i++) {
-      q_smooth_[i] += 0.05 * (q_target_[i] - q_smooth_[i]);
+      q_smooth_[i] += alpha * (q_target_[i] - q_smooth_[i]);
 
       cmd_.motor_cmd[i].q =
           static_cast<float>(Clamp(q_smooth_[i], -1.5, 1.5));
