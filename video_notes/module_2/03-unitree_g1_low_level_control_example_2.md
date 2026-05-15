@@ -148,6 +148,8 @@ Publish LowCmd
 Robot Executes Motion
 ```
 
+![Unitree G1 ankle swing low-level control architecture](img/low_level_control_example2.png)
+
 ---
 
 # ROS 2 Communication Interfaces
