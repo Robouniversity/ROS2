@@ -531,21 +531,6 @@ Always:
 
 ---
 
-# Recommended Learning Path
-
-After understanding this example, continue with:
-
-1. ROS 2 communication basics
-2. Unitree SDK2 architecture
-3. Joint-space control
-4. Whole-body control
-5. Inverse kinematics
-6. Humanoid walking control
-7. Reinforcement learning for robotics
-8. MuJoCo / Isaac simulation integration
-
----
-
 # Summary
 
 The `g1_low_level_example.cpp` file demonstrates the complete low-level control pipeline of the Unitree G1 humanoid robot using ROS 2.
