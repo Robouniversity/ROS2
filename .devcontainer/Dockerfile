@@ -11,8 +11,12 @@ RUN apt-get update && apt-get install -y \
     nano \
     htop \
     python3-colcon-common-extensions \
+    python3-pip \
     python3-rosdep \
+    python3-setuptools \
     python3-vcstool \
+    python3-wheel \
+    sudo \
     libspdlog-dev \
     libyaml-cpp-dev \
     libgl1 \

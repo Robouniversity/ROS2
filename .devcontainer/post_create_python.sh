@@ -332,5 +332,7 @@ export LD_LIBRARY_PATH=/opt/unitree_robotics/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_
 ensure_line_in_file 'export LD_LIBRARY_PATH=/opt/unitree_robotics/lib:$LD_LIBRARY_PATH' ~/.bashrc
 build_local_basic_ros2_workspace
 
+install_python_sim_packages
+install_unitree_sdk2_python
 
 echo "=== Setup Complete ==="
