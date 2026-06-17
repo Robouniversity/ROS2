@@ -18,7 +18,7 @@ Use case:
 
 Motion sequence:
     Stage 1: Slowly move selected upper-body joints to zero.
-    Stage 2: Slowly lift both arms to a mild demonstration pose.
+    Stage 2: Slowly lift both arms to a small demonstration pose.
     Stage 3: Slowly return the arms and waist to zero.
     Stage 4: Slowly release the arm SDK control weight.
 
@@ -39,7 +39,7 @@ from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
 
 
-HALF_PI = 1.570796327
+SMALL_ARM_LIFT = 0.50
 
 CONTROL_DT = 0.02
 STAGE_DURATION = 5.0
@@ -125,19 +125,20 @@ class BasicG1UpperBodyController:
             G1JointIndex.WaistPitch,
         ]
 
-        # Mild arm pose copied from the safe early stage of g1_move.py.
+        # Small arm pose for stage 2.
+        # Keep the lift low to reduce body shaking when returning to zero.
         self.arms_up_pose = {
             G1JointIndex.LeftShoulderPitch: 0.0,
-            G1JointIndex.LeftShoulderRoll: HALF_PI,
+            G1JointIndex.LeftShoulderRoll: SMALL_ARM_LIFT,
             G1JointIndex.LeftShoulderYaw: 0.0,
-            G1JointIndex.LeftElbow: HALF_PI,
+            G1JointIndex.LeftElbow: SMALL_ARM_LIFT,
             G1JointIndex.LeftWristRoll: 0.0,
             G1JointIndex.LeftWristPitch: 0.0,
             G1JointIndex.LeftWristYaw: 0.0,
             G1JointIndex.RightShoulderPitch: 0.0,
-            G1JointIndex.RightShoulderRoll: -HALF_PI,
+            G1JointIndex.RightShoulderRoll: -SMALL_ARM_LIFT,
             G1JointIndex.RightShoulderYaw: 0.0,
-            G1JointIndex.RightElbow: HALF_PI,
+            G1JointIndex.RightElbow: SMALL_ARM_LIFT,
             G1JointIndex.RightWristRoll: 0.0,
             G1JointIndex.RightWristPitch: 0.0,
             G1JointIndex.RightWristYaw: 0.0,
@@ -187,7 +188,7 @@ class BasicG1UpperBodyController:
         if stage == 1:
             print("Stage 1: moving upper-body joints to zero.")
         elif stage == 2:
-            print("Stage 2: lifting both arms slowly.")
+            print("Stage 2: lifting both arms slowly to a small pose.")
         elif stage == 3:
             print("Stage 3: returning upper body to zero.")
         elif stage == 4:
