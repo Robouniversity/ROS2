@@ -9,6 +9,8 @@ UNITREE_ROS2_DIR="$SRC_DIR/unitree_ros2"
 UNITREE_MUJOCO_DIR="$SRC_DIR/unitree_mujoco"
 LOCAL_EXAMPLE_G1_DIR="$WORKSPACE_ROOT/example_g1"
 COPIED_EXAMPLE_G1_DIR="$SRC_DIR/example_g1"
+LOCAL_UNITREE_PYTHON_EXAMPLES_DIR="$WORKSPACE_ROOT/examples_unitree_python_sdk"
+COPIED_UNITREE_PYTHON_EXAMPLES_DIR="$SRC_DIR/examples_unitree_python_sdk"
 LOCAL_BASIC_ROS2_EXAMPLE_DIR="$WORKSPACE_ROOT/unitree_ros2_basic_example"
 ROS2_BASIC_WS_DIR="$WORKSPACE_ROOT/unitree_ros2_basic_example_ws"
 ROS2_BASIC_WS_SRC_DIR="$ROS2_BASIC_WS_DIR/src"
@@ -67,6 +69,15 @@ copy_local_example_g1_assets() {
 
   rm -rf "$COPIED_EXAMPLE_G1_DIR"
   cp -a "$LOCAL_EXAMPLE_G1_DIR" "$COPIED_EXAMPLE_G1_DIR"
+}
+
+copy_local_unitree_python_examples() {
+  if [ ! -d "$LOCAL_UNITREE_PYTHON_EXAMPLES_DIR" ]; then
+    return 0
+  fi
+
+  rm -rf "$COPIED_UNITREE_PYTHON_EXAMPLES_DIR"
+  cp -a "$LOCAL_UNITREE_PYTHON_EXAMPLES_DIR" "$COPIED_UNITREE_PYTHON_EXAMPLES_DIR"
 }
 
 copy_local_basic_ros2_example() {
@@ -233,7 +244,7 @@ setup_unitree_mujoco() {
 
   mkdir -p "$UNITREE_MUJOCO_SIM_DIR" "$UNITREE_MUJOCO_SIM_PYTHON_DIR"
   cp -f "$LOCAL_EXAMPLE_G1_DIR/config.yaml" "$UNITREE_MUJOCO_SIM_DIR/config.yaml"
-  cp -f "$LOCAL_EXAMPLE_G1_DIR/config.yaml" "$UNITREE_MUJOCO_SIM_PYTHON_DIR/config.yaml"
+  cp -f "$LOCAL_EXAMPLE_G1_DIR/config.py" "$UNITREE_MUJOCO_SIM_PYTHON_DIR/config.py"
 
   if [ -L "$UNITREE_MUJOCO_LINK" ]; then
     local current_target
@@ -312,6 +323,7 @@ fi
 patch_unitree_setup_scripts
 
 copy_local_example_g1_assets
+copy_local_unitree_python_examples
 copy_local_basic_ros2_example
 
 build_unitree_sdk2
