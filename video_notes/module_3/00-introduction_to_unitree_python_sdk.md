@@ -175,7 +175,7 @@ The Unitree SDK2 Python library is organized into multiple layers that simplify 
 ## Overall Architecture
 
 ![Unitree G1 Python SDK ](img/unitree_python_arch.png)
-unitree_python_arch.png
+
 
 ```
 User Application
