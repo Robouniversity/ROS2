@@ -1,6 +1,6 @@
 # Module 3: Unitree G1 Programming using Python and ROS 2
 
-## Introduction
+## 00-Introduction to Unitree SDK Python
 
 Python has become one of the most widely used programming languages in robotics due to its simplicity, rich ecosystem, and extensive support for Artificial Intelligence (AI) and Machine Learning (ML). The Unitree G1 humanoid robot provides a complete Python SDK that enables developers to access robot sensors, actuators, and services without writing low-level C++ code.
 
