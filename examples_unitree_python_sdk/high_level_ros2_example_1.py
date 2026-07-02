@@ -25,6 +25,7 @@ Safety:
 
 import sys
 import time
+import threading
 from dataclasses import dataclass
 
 import rclpy
@@ -100,10 +101,6 @@ class G1ArmActionNode(Node):
             % self.network_interface
         )
 
-        # Unitree DDS/channel setup must happen before the high-level client is
-        # initialized. Domain id 0 matches the original SDK example.
-        ChannelFactoryInitialize(0, self.network_interface)
-
         self.arm_action_client = G1ArmActionClient()
         self.arm_action_client.SetTimeout(client_timeout)
         self.arm_action_client.Init()
@@ -140,7 +137,7 @@ class G1ArmActionNode(Node):
             )
             return
 
-        self.execute_action(action_option)
+        threading.Thread(target=self.execute_action, args=(action_option,), daemon=True).start()
 
     def parse_action_option(self, command):
         """Convert an incoming action name or id into an ArmActionOption."""
@@ -176,8 +173,10 @@ class G1ArmActionNode(Node):
                 .get_parameter_value()
                 .double_value
             )
-            time.sleep(release_delay)
-            self.release_arm()
+            self.create_timer(
+                release_delay,
+                lambda: (self.release_arm())
+            )
 
     def should_auto_release(self, option):
         """Match the post-action release behavior in Unitree's original script."""
@@ -215,6 +214,12 @@ class G1ArmActionNode(Node):
 
 
 def main(args=None):
+    interface="lo"
+    if "--ros-args" in sys.argv and "-p" in sys.argv:
+        pass
+    # Initialize Unitree DDS before ROS2
+    ChannelFactoryInitialize(0, interface)
+
     rclpy.init(args=args)
 
     node = None

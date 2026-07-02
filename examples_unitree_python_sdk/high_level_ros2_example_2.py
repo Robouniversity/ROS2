@@ -25,6 +25,7 @@ Safety:
 
 import sys
 import time
+import threading
 from dataclasses import dataclass
 
 import rclpy
@@ -94,10 +95,6 @@ class G1LocoNode(Node):
             % self.network_interface
         )
 
-        # Unitree DDS/channel setup must happen before the high-level client is
-        # initialized. Domain id 0 matches the original SDK example.
-        ChannelFactoryInitialize(0, self.network_interface)
-
         self.loco_client = LocoClient()
         self.loco_client.SetTimeout(client_timeout)
         self.loco_client.Init()
@@ -134,7 +131,7 @@ class G1LocoNode(Node):
             )
             return
 
-        self.execute_action(action_option)
+        threading.Thread(target=self.execute_action, args=(action_option,), daemon=True).start()
 
     def parse_action_option(self, command):
         """Convert an incoming action name or id into a LocoActionOption."""
@@ -160,8 +157,7 @@ class G1LocoNode(Node):
             self.loco_client.Damp()
         elif option.action_id == 1:
             self.loco_client.Damp()
-            time.sleep(0.5)
-            self.loco_client.Squat2StandUp()
+            self.create_timer(0.5, lambda: self.loco_client.Squat2StandUp())
         elif option.action_id == 2:
             self.loco_client.StandUp2Squat()
         elif option.action_id == 3:
@@ -188,15 +184,13 @@ class G1LocoNode(Node):
         elif option.action_id == 11:
             # Match Unitree's original example, which sends ShakeHand twice.
             self.loco_client.ShakeHand()
-            time.sleep(3.0)
-            self.loco_client.ShakeHand()
+            self.create_timer(3.0, lambda: self.loco_client.ShakeHand())
         elif option.action_id == 12:
             self.get_logger().warn(
                 "Lie2StandUp assumes the robot is face-up on hard, flat, rough ground."
             )
             self.loco_client.Damp()
-            time.sleep(0.5)
-            self.loco_client.Lie2StandUp()
+            self.create_timer(0.5, lambda: self.loco_client.Lie2StandUp())
 
     def log_action_options(self):
         """Print all supported actions in a ROS-friendly format."""
@@ -218,6 +212,8 @@ class G1LocoNode(Node):
 
 
 def main(args=None):
+    # Initialize Unitree DDS first (hardware domain 0)
+    ChannelFactoryInitialize(0, "eth0")
     rclpy.init(args=args)
 
     node = None
