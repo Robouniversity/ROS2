@@ -37,6 +37,7 @@ from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
+from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 
 
 # Joint positions are expressed in radians. 0.50 rad is about 28.6 degrees.
@@ -121,6 +122,8 @@ class BasicG1UpperBodyController:
         self.time_sec = 0.0
         self.done = False
         self.received_first_state = False
+        self.mode_machine = 0
+        self.mode_machine_received = False
 
         # Each stage records its own start time and measured starting pose.
         # That lets interpolation begin from wherever the robot actually is.
@@ -176,6 +179,23 @@ class BasicG1UpperBodyController:
 
     def init_channels(self):
         """Create DDS publisher and subscriber."""
+
+        # MotionSwitcher is only required on real hardware.
+        if globals().get("IS_HARDWARE", False):
+            print("Hardware detected. Initializing MotionSwitcher...")
+            self.msc = MotionSwitcherClient()
+            self.msc.SetTimeout(5.0)
+            self.msc.Init()
+
+            status, result = self.msc.CheckMode()
+            while result["name"]:
+                print(f"Releasing active mode: {result['name']}")
+                self.msc.ReleaseMode()
+                status, result = self.msc.CheckMode()
+                time.sleep(1)
+        else:
+            print("Simulation detected. Skipping MotionSwitcher.")
+
         # Publish outgoing commands on Unitree's low-level command topic.
         self.publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
         self.publisher.Init()
@@ -190,6 +210,9 @@ class BasicG1UpperBodyController:
         print("Waiting for low-level robot state...")
         while not self.received_first_state:
             time.sleep(0.1)
+
+        while not self.mode_machine_received:
+            time.sleep(0.05)
 
         print("State received. Starting four-stage upper-body motion.")
         self.capture_stage_start(stage=1)
@@ -206,6 +229,8 @@ class BasicG1UpperBodyController:
         """Store the latest robot state from DDS."""
         # DDS invokes this asynchronously whenever a new state packet arrives.
         self.low_state = msg
+        self.mode_machine = msg.mode_machine
+        self.mode_machine_received = True
         self.received_first_state = True
 
     def capture_stage_start(self, stage):
@@ -232,6 +257,7 @@ class BasicG1UpperBodyController:
     def set_joint_position(self, joint, desired_q):
         """Fill one motor command with simple position-control values."""
         # No direct feed-forward torque is requested.
+        self.low_cmd.motor_cmd[joint].mode = 1
         self.low_cmd.motor_cmd[joint].tau = 0.0
 
         # Ask the joint to hold desired_q with zero desired velocity.
@@ -265,6 +291,16 @@ class BasicG1UpperBodyController:
         self.time_sec += CONTROL_DT
         elapsed = self.time_sec - self.stage_start_time
         ratio = clamp(elapsed / STAGE_DURATION, 0.0, 1.0)
+
+        # Required on real hardware
+        self.low_cmd.mode_machine = self.mode_machine
+        self.low_cmd.mode_pr = 0
+
+        # Initialize all motors
+        for i in range(29):
+            self.low_cmd.motor_cmd[i].mode = 1
+            self.low_cmd.motor_cmd[i].tau = 0.0
+            self.low_cmd.motor_cmd[i].dq = 0.0
 
         # Keep arm SDK active during the moving stages.
         self.low_cmd.motor_cmd[G1JointIndex.kNotUsedJoint].q = 1.0
@@ -308,18 +344,22 @@ class BasicG1UpperBodyController:
 
 def initialize_dds_from_args():
     """Use loopback by default, or the user-provided network interface."""
+    global IS_HARDWARE
+
     if len(sys.argv) > 1:
         interface = sys.argv[1]
-
-        # This example uses domain 1 for local simulation and domain 0 when
-        # communicating with a robot over a physical network interface.
         domain_id = 1 if interface == "lo" else 0
     else:
         interface = "lo"
         domain_id = 1
 
+    IS_HARDWARE = (interface != "lo")
+
     print(f"Using DDS domain {domain_id} on interface '{interface}'.")
+    print("Mode:", "Hardware" if IS_HARDWARE else "Simulation")
+
     ChannelFactoryInitialize(domain_id, interface)
+
 
 
 def main():

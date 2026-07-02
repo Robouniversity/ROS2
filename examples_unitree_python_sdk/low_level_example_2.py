@@ -48,6 +48,7 @@ from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
+from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 
 
 PI = math.pi
@@ -121,6 +122,8 @@ class DanceG1UpperBodyController:
         self.time_sec = 0.0
         self.done = False
         self.received_first_state = False
+        self.mode_machine = 0
+        self.mode_machine_received = False
 
         self.stage = 0
         self.stage_start_time = 0.0
@@ -164,6 +167,19 @@ class DanceG1UpperBodyController:
 
     def init_channels(self):
         """Create DDS publisher and subscriber."""
+        if globals().get("IS_HARDWARE", False):
+            print("Hardware detected. Initializing MotionSwitcher...")
+            self.msc=MotionSwitcherClient()
+            self.msc.SetTimeout(5.0)
+            self.msc.Init()
+            status,result=self.msc.CheckMode()
+            while result["name"]:
+                self.msc.ReleaseMode()
+                status,result=self.msc.CheckMode()
+                time.sleep(1)
+        else:
+            print("Simulation detected. Skipping MotionSwitcher.")
+
         self.publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
         self.publisher.Init()
 
@@ -175,6 +191,9 @@ class DanceG1UpperBodyController:
         print("Waiting for low-level robot state...")
         while not self.received_first_state:
             time.sleep(0.1)
+
+        while not self.mode_machine_received:
+            time.sleep(0.05)
 
         print("State received. Starting simulation dance sequence.")
         self.capture_stage_start(stage=1)
@@ -189,6 +208,8 @@ class DanceG1UpperBodyController:
     def low_state_callback(self, msg: LowState_):
         """Store the latest robot state from DDS."""
         self.low_state = msg
+        self.mode_machine = msg.mode_machine
+        self.mode_machine_received = True
         self.received_first_state = True
 
     def capture_stage_start(self, stage):
@@ -237,6 +258,7 @@ class DanceG1UpperBodyController:
 
         self.commanded_positions[joint] = smooth_q
 
+        self.low_cmd.motor_cmd[joint].mode = 1
         self.low_cmd.motor_cmd[joint].tau = 0.0
         self.low_cmd.motor_cmd[joint].q = smooth_q
         self.low_cmd.motor_cmd[joint].dq = 0.0
@@ -335,6 +357,13 @@ class DanceG1UpperBodyController:
         elapsed = self.time_sec - self.stage_start_time
         ratio = clamp(elapsed / self.stage_duration, 0.0, 1.0)
 
+        self.low_cmd.mode_machine=self.mode_machine
+        self.low_cmd.mode_pr=0
+        for i in range(29):
+            self.low_cmd.motor_cmd[i].mode=1
+            self.low_cmd.motor_cmd[i].tau=0.0
+            self.low_cmd.motor_cmd[i].dq=0.0
+
         # Keep arm SDK active during all motion stages.
         self.low_cmd.motor_cmd[G1JointIndex.kNotUsedJoint].q = 1.0
 
@@ -378,8 +407,9 @@ class DanceG1UpperBodyController:
 
 
 def initialize_dds_from_args():
-    """Use loopback by default and protect users from accidental hardware runs."""
-    allow_hardware = "--allow-hardware" in sys.argv
+    """Automatically detect simulation or hardware from the network interface."""
+    global IS_HARDWARE
+
     interfaces = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
 
     if interfaces:
@@ -387,13 +417,12 @@ def initialize_dds_from_args():
     else:
         interface = "lo"
 
-    if interface != "lo" and not allow_hardware:
-        print("This dance example is intended for simulation.")
-        print("Use 'lo' for simulation, or add --allow-hardware if you really intend hardware.")
-        sys.exit(1)
-
+    IS_HARDWARE = (interface != "lo")
     domain_id = 1 if interface == "lo" else 0
+
     print(f"Using DDS domain {domain_id} on interface '{interface}'.")
+    print("Mode:", "Hardware" if IS_HARDWARE else "Simulation")
+
     ChannelFactoryInitialize(domain_id, interface)
 
 
