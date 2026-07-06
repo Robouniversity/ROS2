@@ -12,7 +12,7 @@ Example:
 
     # Override the interface when connecting to the robot network.
     python3 examples_unitree_python_sdk/high_level_ros2_example_2.py --ros-args \
-        -p network_interface:=eth0
+        -p network_interface:=enp4s0
 
     ros2 topic pub --once /g1_loco/command std_msgs/msg/String \
         "{data: 'move forward'}"
@@ -70,7 +70,7 @@ class G1LocoNode(Node):
 
         # Use loopback by default so the node can start without arguments,
         # which is useful for local testing or simulator setups.
-        self.declare_parameter("network_interface", "lo")
+        self.declare_parameter("network_interface", "enp4s0")
         self.declare_parameter("command_topic", "~/command")
         self.declare_parameter("client_timeout", 10.0)
         self.declare_parameter("move_forward_speed", 0.3)
@@ -88,7 +88,7 @@ class G1LocoNode(Node):
         )
 
         if not self.network_interface:
-            self.network_interface = "lo"
+            self.network_interface = "enp4s0"
 
         self.get_logger().info(
             "Using network interface '%s' for Unitree SDK communication."
@@ -213,7 +213,8 @@ class G1LocoNode(Node):
 
 def main(args=None):
     # Initialize Unitree DDS first (hardware domain 0)
-    ChannelFactoryInitialize(0, "eth0")
+    interface = "enp4s0"
+    ChannelFactoryInitialize(0, interface)
     rclpy.init(args=args)
 
     node = None

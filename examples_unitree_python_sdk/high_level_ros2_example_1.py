@@ -12,7 +12,7 @@ Example:
 
     # Override the interface when connecting to the robot network.
     python3 examples_unitree_python_sdk/high_level_ros2_example_1.py --ros-args \
-        -p network_interface:=eth0
+        -p network_interface:=enp4s0
 
     ros2 topic pub --once /g1_arm_action/command std_msgs/msg/String \
         "{data: 'shake hand'}"
@@ -77,7 +77,7 @@ class G1ArmActionNode(Node):
 
         # Use loopback by default so the node can start without arguments,
         # which is useful for local testing or simulator setups.
-        self.declare_parameter("network_interface", "lo")
+        self.declare_parameter("network_interface", "enp4s0")
         self.declare_parameter("command_topic", "~/command")
         self.declare_parameter("client_timeout", 10.0)
         self.declare_parameter("auto_release", True)
@@ -94,7 +94,7 @@ class G1ArmActionNode(Node):
         )
 
         if not self.network_interface:
-            self.network_interface = "lo"
+            self.network_interface = "enp4s0"
 
         self.get_logger().info(
             "Using network interface '%s' for Unitree SDK communication."
@@ -214,7 +214,7 @@ class G1ArmActionNode(Node):
 
 
 def main(args=None):
-    interface="lo"
+    interface="enp4s0"
     if "--ros-args" in sys.argv and "-p" in sys.argv:
         pass
     # Initialize Unitree DDS before ROS2
